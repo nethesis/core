@@ -204,7 +204,10 @@ switch ($action) {
 		// this can rewrite too, so edit is the same
 		core_trunks_update_dialrules($trunknum, $dialpattern_insert, true);
 		needreload();
-		redirect_standard('extdisplay');
+		$tech = '';
+		$extdisplay = '';
+		unset($_REQUEST['tech']);
+		unset($_REQUEST['extdisplay']);
 	break;
 	case "deltrunk":
 
@@ -490,7 +493,9 @@ if (!$tech && !$extdisplay) {
 		default:
 		$helptext = '';
 	}
-
+	// implementation of module hook
+	$module_hook == moduleHook::create();
+        $hookhtml = $module_hook->hookHtml;
 	$displayvars = array(
 		'extdisplay' => $extdisplay,
 		'display' => $display,
@@ -516,10 +521,10 @@ if (!$tech && !$extdisplay) {
 		'dialoutprefix' => $dialoutprefix,
 		'num_routes' => $num_routes,
 		'routes' => $routes,
-		'helptext' => $helptext
+		'helptext' => $helptext,
+		'hookHtml' => $hookhtml
 	);
 	show_view(dirname(__FILE__).'/views/trunks/trunk_header.php',$displayvars);
-
 	switch ($tech) {
 		case "zap":
 			show_view(dirname(__FILE__).'/views/trunks/zap.php',$displayvars);
@@ -564,9 +569,6 @@ if (!$tech && !$extdisplay) {
 		default:
 			break;
 	}
-	// implementation of module hook
-	$module_hook == moduleHook::create();
-	echo $module_hook->hookHtml;
 	show_view(dirname(__FILE__).'/views/trunks/trunk_footer.php',$displayvars);
 }
 

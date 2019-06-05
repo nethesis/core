@@ -72,11 +72,15 @@ $rgmethod = trim($rgmethod);
 
 // Get all headers
 $headers = array();
+$alertinfo_set_flag = 0;
+$rvol = get_var( $AGI, "RVOL" );
 $alertinfo = get_var( $AGI, "ALERT_INFO" );
 if ($alertinfo) {
-	debug("Setting Alert-Info:  $alertinfo", 4);
-	$headers['Alert-Info'] = $alertinfo;
-	$AGI->set_alertinfo($alertinfo);
+	if($rvol !=""){
+		$headers['Alert-Info'] = $alertinfo.'\;volume='.$rvol;
+	} else {
+		$headers['Alert-Info'] = $alertinfo;
+	}
 }
 
 $sippheader = get_var( $AGI, "SIPADDHEADER" );

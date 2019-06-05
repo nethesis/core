@@ -1,6 +1,7 @@
 <?php
 // vim: set ai ts=4 sw=4 ft=php:
 namespace FreePBX\modules\Core\Drivers;
+use \FreePBX\modules\Core\Driver as techDriver;
 if(!class_exists("\\FreePBX\\Modules\\Core\\Drivers\\Sip")) {
 	include(__DIR__."/Sip.class.php");
 }
@@ -40,40 +41,6 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 			"shortName" => "PJSIP",
 			"description" => _("A new SIP channel driver for Asterisk, chan_pjsip is built on the PJSIP SIP stack. A collection of resource modules provides the bulk of the SIP functionality")
 		);
-	}
-
-	public function addDevice($id, $settings) {
-		$sql = 'INSERT INTO sip (id, keyword, data, flags) values (?,?,?,?)';
-		$sth = $this->database->prepare($sql);
-		$settings = is_array($settings)?$settings:array();
-		foreach($settings as $key => $setting) {
-			$sth->execute(array($id,$key,$setting['value'],$setting['flag']));
-		}
-		return true;
-	}
-
-	public function delDevice($id) {
-		$sql = "DELETE FROM sip WHERE id = ?";
-		$sth = $this->database->prepare($sql);
-		$sth->execute(array($id));
-		return true;
-	}
-
-	public function getDevice($id) {
-		$sql = "SELECT keyword,data FROM sip WHERE id = ?";
-		$sth = $this->database->prepare($sql);
-		$tech = array();
-		try {
-			$sth->execute(array($id));
-			$tech = $sth->fetchAll(\PDO::FETCH_COLUMN|\PDO::FETCH_GROUP);
-			//reformulate into what is expected
-			//This is in the try catch just for organization
-			foreach($tech as &$value) {
-				$value = $value[0];
-			}
-		} catch(\Exception $e) {}
-
-		return $tech;
 	}
 
 	public function getDefaultDeviceSettings($id, $displayname, &$flag) {
@@ -171,6 +138,10 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 				"value" => version_compare($this->version,'13.9.1','ge') ? "auto" : "unsolicited",
 				"flag" => $flag++
 			),
+			"aggregate_mwi" => array(
+				"value" => "no",
+				"flag" => $flag++
+			),
 			"media_encryption" => array(
 				"value" => "no",
 				"flag" => $flag++
@@ -196,6 +167,14 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 			        "flag" => $flag++
 			),
 			"match" => array(
+				"value" => "",
+				"flag" => $flag++
+			),
+			"direct_media" => array(
+				"value" => "yes",
+				"flag" => $flag++
+			),
+			"match_header" => array(
 				"value" => "",
 				"flag" => $flag++
 			),
@@ -278,6 +257,12 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 
 		$select[] = array('value' => 'no', 'text' => _('No'));
 		$select[] = array('value' => 'yes', 'text' => _('Yes'));
+		$tt = _("Determines whether media may flow directly between endpoints.");
+		$tmparr['direct_media'] = array('prompttext' => _('Direct Media'), 'value' => 'yes', 'tt' => $tt, 'select' => $select, 'level' => 1, 'type' => 'radio');
+		unset($select);
+
+		$select[] = array('value' => 'no', 'text' => _('No'));
+		$select[] = array('value' => 'yes', 'text' => _('Yes'));
 		$tt = _("Determines whether encryption should be used if possible but does not terminate the session if not achieved. This option only applies if Media Encryption is not set to None.").' [media_encryption_optimistic]';
 		$tmparr['media_encryption_optimistic'] = array('prompttext' => _('Allow Non-Encrypted Media (Opportunistic SRTP)'), 'value' => 'no', 'tt' => $tt, 'select' => $select, 'level' => 1, 'type' => 'radio');
 
@@ -288,6 +273,10 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 		//https://wiki.asterisk.org/wiki/display/AST/Asterisk+13+Configuration_res_pjsip_endpoint_identifier_ip
 		$tt = _("The value is a comma-delimited list of IP addresses. IP addresses may have a subnet mask appended. The subnet mask may be written in either CIDR or dot-decimal notation. Separate the IP address and subnet mask with a slash ('/')");
 		$tmparr['match'] = array('prompttext' => _('Match (Permit)'), 'value' => '', 'tt' => $tt, 'level' => 1);
+		unset($select);
+
+		$tt = _("With an \"identify\" section you specify the endpoint to recognize when a request comes in with the exact header and contents in match_header");
+		$tmparr['match_header'] = array('prompttext' => _('Match Header'), 'value' => '', 'tt' => $tt, 'level' => 1);
 		unset($select);
 
 		$tt = _("Maximum time to keep an AoR");
@@ -400,6 +389,8 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 					'transport' => $trunk['transport'],
 					'outbound_auth' => $tn,
 					'retry_interval' => $trunk['retry_interval'],
+  					'fatal_retry_interval' => (empty($trunk['fatal_retry_interval']))? "0" : $trunk['fatal_retry_interval'],
+					'forbidden_retry_interval' => (empty($trunk['forbidden_retry_interval']))? "0" : $trunk['forbidden_retry_interval'],
 					'max_retries' => $retries,
 					'expiration' => $trunk['expiration'],
 					'line' => 'yes',
@@ -587,6 +578,10 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 				// FREEPBX-13047 PJSIP doesn't allow you to set inband_progress
 				if(!empty($trunk['inband_progress']) && $trunk['inband_progress'] === "yes"){
 					$conf['pjsip.endpoint.conf'][$tn]['inband_progress'] = "yes";
+				}
+
+				if(!empty($trunk['force_rport']) && $trunk['force_rport'] === "no"){
+					$conf['pjsip.endpoint.conf'][$tn]['force_rport'] = "no";
 				}
 
 				//FREEPBX-14849 PJSIP "direct_media" endpoint option not available and can't set as a custom one
@@ -1024,7 +1019,7 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 		$endpoint[] = "allow=".$this->filterValidCodecs($config['allow']); // & is invalid in pjsip
 
 		$endpoint[] = "context=".$config['context'];
-		$endpoint[] = "callerid=".$config['callerid'];
+		$endpoint[] = techDriver::map_dev_user($config['account'], 'callerid', $config['callerid']);
 		// PJSIP Has a limited number of dtmf settings. If we don't know what it is, set it to RFC.
 		$validdtmf = array("rfc4733","inband","info");
 		if(version_compare($this->version,'13','ge')) {
@@ -1039,19 +1034,22 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 		}
 		$endpoint[] = "dtmf_mode=".$config['dtmfmode'];
 
+		if (!empty($config['direct_media'])) {
+			$endpoint[] = "direct_media=".$config['direct_media'];
+		}
 		//http://issues.freepbx.org/browse/FREEPBX-12151
 		if(isset($config['mailbox'])) {
 			$mwisub = !empty($config['mwi_subscription']) ? $config['mwi_subscription'] : (version_compare($this->version,'13.9.1','ge') ? "auto" : "unsolicited");
 			switch($mwisub) {
 				case "solicited":
-					$aor[] = "mailboxes=".$config['mailbox'];
+					$aor[] = techDriver::map_dev_user($config['account'], 'mailboxes', $config['mailbox']);
 				break;
 				case "unsolicited":
-					$endpoint[] = "mailboxes=".$config['mailbox'];
+					$endpoint[] = techDriver::map_dev_user($config['account'], 'mailboxes', $config['mailbox']);
 				break;
 				case "auto":
-					$aor[] = "mailboxes=".$config['mailbox'];
-					$endpoint[] = "mailboxes=".$config['mailbox'];
+					$aor[] = techDriver::map_dev_user($config['account'], 'mailboxes', $config['mailbox']);
+					$endpoint[] = techDriver::map_dev_user($config['account'], 'mailboxes', $config['mailbox']);
 					$endpoint[] = "mwi_subscribe_replaces_unsolicited=yes";
 				break;
 			}
@@ -1104,8 +1102,13 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 		if (!empty($config['trustrpid'])) {
 			$endpoint[] = "trust_id_inbound=".$config['trustrpid'];
 		}
+
 		if (!empty($config['match'])) {
 			$identify[] = "match=".$config['match'];
+		}
+
+		if (!empty($config['match_header'])) {
+			$identify[] = "match_header=".$config['match_header'];
 		}
 
 		if (!empty($config['media_encryption'])) {
@@ -1231,13 +1234,17 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 		if (isset($retarr["pjsip.identify.conf"][$identifyname])) {
 			throw new \Exception("Identify $aorname already exists.");
 		}
-		$retarr["pjsip.identify.conf"][$identifyname] = $identify;
-		if(!empty($this->_identify[$identifyname]) && is_array($this->_identify[$identifyname])) {
-			foreach($this->_identify[$identifyname] as $el) {
-				$retarr["pjsip.identify.conf"][$identifyname][] = "{$el['key']}={$el['value']}";
+
+		if (!empty($config['match_header']) || !empty($config['match']) || !empty($this->_identify[$identifyname])) {
+			$retarr["pjsip.identify.conf"][$identifyname] = $identify;
+			if(!empty($this->_identify[$identifyname]) && is_array($this->_identify[$identifyname])) {
+				foreach($this->_identify[$identifyname] as $el) {
+					$retarr["pjsip.identify.conf"][$identifyname][] = "{$el['key']}={$el['value']}";
+				}
+				unset($this->_identify[$identifyname]);
 			}
-			unset($this->_identify[$identifyname]);
 		}
+
 	}
 
 	/**
@@ -1430,7 +1437,8 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 				"media_address" => "",
 				"media_encryption" => "no",
 				"message_context" => "",
-				"identify_by" => "default"
+				"identify_by" => "default",
+				"force_rport" => "yes"
 			);
 			if(version_compare($this->version,'13','ge')) {
 				$dispvars['dtmfmode'] = 'auto';

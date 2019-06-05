@@ -1,6 +1,8 @@
 <?php
 // vim: set ai ts=4 sw=4 ft=php:
 namespace FreePBX\modules;
+//progress bar
+use Symfony\Component\Console\Helper\ProgressBar;
 class Core extends \FreePBX_Helpers implements \BMO  {
 
 	private $drivers = array();
@@ -8,6 +10,7 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 	private $getUserCache = array();
 	private $getDeviceCache = array();
 	private $listUsersCache = array();
+	private $fastAGIState = false;
 
 	public function __construct($freepbx = null) {
 		parent::__construct($freepbx);
@@ -134,14 +137,14 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 	 * Quick Extension Create Display
 	 */
 	public function getQuickCreateDisplay() {
-		$devs = $this->getAllUsersByDeviceType();
-		$dev = end($devs);
-		$startExt = $dev['extension'] + 1;
+		$sql = "SELECT extension FROM users ORDER BY extension DESC LIMIT 1";
+		$lastExension = $this->freepbx->Database->query($sql)->fetchColumn();
+		$startExt = !empty($lastExension) ? $lastExension + 1 : 1;
 
 		$pages = array();
 		$pages[0][] = array(
 			'html' => load_view(__DIR__.'/views/quickCreate.php',array('startExt' => $startExt)),
-			'validate' => 'if($("#extension").val().trim() == "") {warnInvalid($("#extension"),"'._("Extension can not be blank!").'");return false}if(typeof extmap[$("#extension").val().trim()] !== "undefined") {warnInvalid($("#extension"),"'._("Extension already in use!").'");return false}if($("#name").val().trim() == "") {warnInvalid($("#name"),"'._("Display Name can not be blank!").'");return false}'
+			'validate' => 'if($("#extension").val().trim() == "") {warnInvalid($("#extension"),"'._("Extension can not be blank!").'");return false}if(typeof extmap[$("#extension").val().trim()] !== "undefined") {warnInvalid($("#extension"),"'._("Extension already in use!").'");return false}if($("#name").val().trim() == "") {warnInvalid($("#name"),"'._("Display Name can not be blank!").'");return false}if($("#tech").val() == "dahdi" && $("#channel").val().trim() == "") {warnInvalid($("#channel"),"'._("Channel can not be blank!").'");return false}'
 		);
 		$modules = $this->freepbx->Hooks->processHooks();
 		foreach($modules as $module) {
@@ -161,10 +164,14 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 	 * @param array $data      Data passed from $_POST on submit
 	 */
 	public function processQuickCreate($tech, $extension, $data) {
+		$channel = false;
 		if(!is_numeric($extension)) {
 			return array("status" => false, "message" => _("Extension was not numeric!"));
 		}
-		$settings = $this->generateDefaultDeviceSettings($tech,$extension,$data['name']);
+		if($tech == "dahdi") {
+			$channel = $data['channel'];
+		}
+		$settings = $this->generateDefaultDeviceSettings($tech,$extension,$data['name'],$channel);
 		if(!$this->addDevice($extension,$tech,$settings)) {
 			return array("status" => false, "message" => _("Device was not added!"));
 		}
@@ -686,25 +693,21 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 				}
 			break;
 			case 'getnpanxxjson':
-				try {
-					$npa = $request['npa'];
-					$nxx = $request['nxx'];
-					$url = 'http://www.localcallingguide.com/xmllocalprefix.php?npa=602&nxx=930';
-					$request = new \Pest('http://www.localcallingguide.com/xmllocalprefix.php');
-					$data = $request->get('?npa='.$npa.'&nxx='.$nxx);
-					$xml = new \SimpleXMLElement($data);
-					$pfdata = $xml->xpath('//lca-data/prefix');
-					$retdata = array();
-					foreach($pfdata as $item){
-						$inpa = (string)$item->npa;
-						$inxx = (string)$item->nxx;
-						$retdata[$inpa.$inxx] = array('npa' => $inpa, 'nxx' => $inxx);
-					}
-					return $retdata;
-
-				}catch(Pest_NotFound $e){
-					return array('error' => $e);
+				$npa = $request['npa'];
+				$nxx = $request['nxx'];
+				$data = $this->freepbx->Curl->get('http://www.localcallingguide.com/xmllocalprefix.php?npa='.$npa.'&nxx='.$nxx);
+				if(!$data->success || $data->status_code != 200) {
+					return array('error' => 'Error getting data');
 				}
+				$xml = new \SimpleXMLElement($data->body);
+				$pfdata = $xml->xpath('//lca-data/prefix');
+				$retdata = array();
+				foreach($pfdata as $item){
+					$inpa = (string)$item->npa;
+					$inxx = (string)$item->nxx;
+					$retdata[$inpa.$inxx] = array('npa' => $inpa, 'nxx' => $inxx);
+				}
+				return $retdata;
 			break;
 			case 'populatenpanxx':
 				$dialpattern_array = $dialpattern_insert;
@@ -792,6 +795,18 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 	public function doConfigPageInit($page) {
 		//Reassign $_REQUEST as it will be immutable in the future.
 		$request = freepbxGetSanitizedRequest();
+		$unsanitized = array(
+			'CC_AGENT_ALERT_INFO_DEFAULT',
+			'CC_MONITOR_ALERT_INFO_DEFAULT',
+			'ATTTRANSALERTINFO'
+			,'BLINDTRANSALERTINFO',
+			'INTERNALALERTINFO'
+		);
+		foreach($unsanitized as $s) {
+			if(isset($_POST[$s])) {
+				$request[$s] = $_POST[$s];
+			}
+		}
 		global $amp_conf;
 		if ($page == "advancedsettings"){
 			$freepbx_conf = $this->config;
@@ -848,12 +863,13 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 					if (core_dahdichandids_add($description, $channel, $did)) {
 						needreload();
 						$_REQUEST['extdisplay'] = $channel;
-						$this->freepbx->View->redirect_standard('extdisplay');
+						unset($_REQUEST['view']);
 					}
 				break;
 				case 'edit':
 					if (core_dahdichandids_edit($description, $channel, $did)) {
 						needreload();
+						unset($_REQUEST['view']);
 					}
 				break;
 				case 'delete':
@@ -1209,21 +1225,7 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 			$extdisplay= htmlspecialchars(isset($request['extdisplay'])?$request['extdisplay']:'');
 			$old_extdisplay = $extdisplay;
 			$dispnum = 'did'; //used for switch on config.php
-			$account = isset($request['account'])?$request['account']:'';
 			$action = isset($request['action'])?$request['action']:'';
-			$goto = isset($request['goto0'])?$request['goto0']:'';
-			$ringing = isset($request['ringing'])?$request['ringing']:'';
-			$fanswer = isset($request['fanswer'])?$request['fanswer']:'';
-			$reversal = isset($request['reversal'])?$request['reversal']:'';
-			$description = htmlspecialchars(isset($request['description'])?$request['description']:'');
-			$privacyman = isset($request['privacyman'])?$request['privacyman']:'0';
-			$pmmaxretries = isset($request['pmmaxretries'])?$request['pmmaxretries']:'';
-			$pmminlength = isset($request['pmminlength'])?$request['pmminlength']:'';
-			$alertinfo = htmlspecialchars(isset($request['alertinfo'])?$request['alertinfo']:'');
-			$mohclass = isset($request['mohclass'])?$request['mohclass']:'default';
-			$grppre = isset($request['grppre'])?$request['grppre']:'';
-			$delay_answer = isset($request['delay_answer'])&&$request['delay_answer']?$request['delay_answer']:'0';
-			$pricid = isset($request['pricid'])?$request['pricid']:'';
 			$rnavsort = isset($request['rnavsort'])?$request['rnavsort']:'description';
 			$didfilter = isset($request['didfilter'])?$request['didfilter']:'';
 			if (isset($request['submitclear']) && isset($request['goto0'])) {
@@ -1417,7 +1419,7 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 	 * @param {int} The exten or device number
 	 * @param {string} $displayname The displayname
 	 */
-	public function generateDefaultDeviceSettings($tech,$number,$displayname,&$flag = 2) {
+	public function generateDefaultDeviceSettings($tech,$number,$displayname,$channel = false,&$flag = 2) {
 		$flag = !empty($flag) ? $flag : 2;
 		$dial = '';
 		$settings = array();
@@ -1427,6 +1429,14 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 			if(empty($settings)) {
 				return array();
 			}
+		}
+		if($tech == "dahdi") {
+			if(isset($channel)){
+				$settings['settings']['channel']['value'] = $channel;
+				$dial_value = $settings['dial']."/".$channel;
+			}
+		} else {
+			$dial_value = $settings['dial']."/".$number;
 		}
 		$gsettings  = array(
 			"devicetype" => array(
@@ -1442,7 +1452,7 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 				"value" => '',
 			),
 			"dial" => array(
-				"value" => $settings['dial']."/".$number,
+				"value" => $dial_value,
 				"flag" => $flag++
 			),
 			"secret" => array(
@@ -1464,9 +1474,16 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 			"callerid" => array(
 				"value" => "$displayname <".$number.">",
 				"flag" => $flag++
+			),
+			"outbound_proxy" => array(
+				"value" => '',
+				"flag" => $flag++
+			),
+			"outbound_proxy" => array(
+				"value" => '',
+				"flag" => $flag++
 			)
 		);
-
 		return array_merge($settings['settings'],$gsettings);
 	}
 
@@ -1513,13 +1530,14 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 		$settings['user']['value'] = ($settings['user']['value'] == 'new') ? $id : $settings['user']['value'];
 		$settings['emergency_cid']['value'] = trim($settings['emergency_cid']['value']);
 		$settings['description']['value'] = trim($settings['description']['value']);
+		$settings['hint_override']['value'] = isset($settings['hint_override']['value'])?trim($settings['hint_override']['value']) : null;
 
 		//insert into devices table
 		if($tech != 'virtual'){
-			$sql="INSERT INTO devices (id,tech,dial,devicetype,user,description,emergency_cid) values (?,?,?,?,?,?,?)";
+			$sql="INSERT INTO devices (id,tech,dial,devicetype,user,description,emergency_cid, hint_override) values (?,?,?,?,?,?,?,?)";
 			$sth = $this->database->prepare($sql);
 			try {
-				$sth->execute(array($id,$tech,$settings['dial']['value'],$settings['devicetype']['value'],$settings['user']['value'],$settings['description']['value'],$settings['emergency_cid']['value']));
+				$sth->execute(array($id,$tech,$settings['dial']['value'],$settings['devicetype']['value'],$settings['user']['value'],$settings['description']['value'],$settings['emergency_cid']['value'],$settings['hint_override']['value']));
 			} catch(\Exception $e) {
 				die_freepbx("Could Not Insert Device", $e->getMessage());
 				return false;
@@ -1541,6 +1559,7 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 					$astman->database_put("DEVICE",$id."/user",$settings['user']['value']);
 				}
 			}
+			$astman->database_put("DEVICE",$id."/tech",$tech);
 			$astman->database_put("DEVICE",$id."/dial",$settings['dial']['value']);
 			$astman->database_put("DEVICE",$id."/type",$settings['devicetype']['value']);
 			$astman->database_put("DEVICE",$id."/default_user",$settings['user']['value']);
@@ -1569,10 +1588,8 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 			die_freepbx("Cannot connect to Asterisk Manager with ".$this->config->get('AMPMGRUSER')."/".$this->config->get('AMPMGRPASS'));
 		}
 
-		// create a voicemail symlink if needed
-		// TODO: This should be hooked from voicemail
-		if ( $this->FreePBX->Modules->moduleHasMethod('Voicemail','setupMailboxSymlinks') ) {
-			$this->FreePBX->Voicemail->setupMailboxSymlinks($settings['user']['value']);
+		if ( $this->FreePBX->Modules->moduleHasMethod('Voicemail','mapMailBox') ) {
+			$this->FreePBX->Voicemail->mapMailBox($settings['user']['value']);
 		}
 
 		// before calling device specifc funcitions, get rid of any bogus fields in the array
@@ -1586,6 +1603,7 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 		unset($settings['description']);
 		unset($settings['emergency_cid']);
 		unset($settings['changecdriver']);
+		unset($settings['hint_override']);
 
 		//take care of sip/iax/zap config
 		$tech = strtolower($tech);
@@ -1812,7 +1830,7 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 		return $sth->fetchAll(\PDO::FETCH_ASSOC);
 	}
 
-	public function getTrunkTrunkNameByID() {
+	public function getTrunkTrunkNameByID($trunknum) {
 		$name = "SELECT `name` FROM `trunks` WHERE `trunkid` = ?";
 		$sth = $this->database->prepare($name);
 		$sth->execute(array($trunknum));
@@ -2399,7 +2417,7 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 		$settings['privacyman'] = isset($settings['privacyman'])?$settings['privacyman']:'0';
 		$settings['pmmaxretries'] = isset($settings['pmmaxretries'])?$settings['pmmaxretries']:'';
 		$settings['pmminlength'] = isset($settings['pmminlength'])?$settings['pmminlength']:'';
-		$settings['alertinfo'] = htmlspecialchars(isset($settings['alertinfo'])?$settings['alertinfo']:'');
+		$settings['alertinfo'] = isset($settings['alertinfo'])?$settings['alertinfo']:'';
 		$settings['ringing'] = isset($settings['ringing'])?$settings['ringing']:'';
 		$settings['reversal'] = isset($settings['reversal'])?$settings['reversal']:'';
 		$settings['mohclass'] = isset($settings['mohclass'])?$settings['mohclass']:'default';
@@ -2636,7 +2654,6 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 		}
 
 		//if voicemail is enabled, set the box@context to use
-		//havn't checked but why is voicemail needed on users anyway?  Doesn't exactly make it modular !
 		//TODO use a hook here
 		if ( $this->FreePBX->Modules->moduleHasMethod('Voicemail','getMailbox') ) {
 			$vmbox = $this->FreePBX->Voicemail->getMailbox($extension);
@@ -3518,5 +3535,205 @@ class Core extends \FreePBX_Helpers implements \BMO  {
 		}
 		$codecs = implode(",",$final);
 		return $codecs;
+	}
+
+	/**
+	 * Start FreePBX for fwconsole hook
+	 * @param object $output The output object.
+	 */
+	public function startFreepbx($output=null, $debug=true) {
+		if(!$this->freepbx->Config->get('LAUNCH_AGI_AS_FASTAGI')) {
+			return;
+		}
+		$this->setWriter($output);
+		if($this->freepbx->Config->get('LAUNCH_AGI_AS_FASTAGI') && !$this->freepbx->Modules->checkStatus("pm2")) {
+			$this->writeln('PM2 is not installed/enabled. Unable to start Core FastAGI Server');
+			return;
+		}
+		$pm2 = $this->freepbx->Pm2;
+		$status = $pm2->getStatus("core-fastagi");
+		switch($status['pm2_env']['status']) {
+			case 'online':
+				if($debug) {
+					$this->writeln(sprintf(_("Core FastAGI Server has already been running on PID %s for %s"),$status['pid'],$status['pm2_env']['created_at_human_diff']));
+				}
+				return $status['pid'];
+			break;
+			default:
+				if($debug) {
+					$this->writeln(_("Starting Core FastAGI Server..."));
+				}
+				$opts = array(
+					'ASTAGIDIR' => $this->freepbx->Config->get('ASTAGIDIR')
+				);
+				if($this->freepbx->Config->get('DEVEL')) {
+					$opts['NODE_ENV'] = 'development';
+				}
+				$this->freepbx->pm2->start(
+					"core-fastagi",
+					__DIR__."/node/fastagi-server.js",
+					$opts
+				);
+				if(is_object($output)) {
+					$progress = new ProgressBar($output, 0);
+					$progress->setFormat('[%bar%] %elapsed%');
+					$progress->start();
+				}
+				$i = 0;
+				while($i < 100) {
+					$data = $pm2->getStatus("core-fastagi");
+					if(!empty($data) && $data['pm2_env']['status'] == 'online') {
+						if(is_object($output)) {
+							$progress->finish();
+						}
+						break;
+					}
+					if(is_object($output)) {
+						$progress->setProgress($i);
+					}
+					$i++;
+					usleep(100000);
+				}
+				if(is_object($output)) {
+					if($debug) {
+						$this->writeln("");
+					}
+				}
+				if(!empty($data)) {
+					$pm2->reset("core-fastagi");
+					if($debug) {
+						$this->writeln(sprintf(_("Started Core FastAGI Server. PID is %s"),$data['pid']));
+					}
+					return $data['pid'];
+				}
+				if($debug) {
+					$this->writeln("<error>".sprintf(_("Failed to run: '%s'")."</error>",$command));
+				}
+			break;
+		}
+	}
+
+
+	/**
+	 * Stop FreePBX for fwconsole hook
+	 * @param object $output The output object.
+	 */
+	public function stopFreepbx($output=null, $debug=true) {
+		$this->setWriter($output);
+		if(!$this->freepbx->Modules->checkStatus("pm2")) {
+			$this->writeln('PM2 is not installed/enabled. Unable to stop Core FastAGI Server');
+			return;
+		}
+		$pm2 = $this->freepbx->Pm2;
+		$data = $this->freepbx->pm2->getStatus("core-fastagi");
+		if(empty($data) || $data['pm2_env']['status'] != 'online') {
+			if($debug) {
+				$this->writeln("<error>"._("Core FastAGI Server is not running")."</error>");
+			}
+			return false;
+		}
+		// executes after the command finishes
+		if($debug) {
+			$this->writeln(_("Stopping Core FastAGI Server"));
+		}
+
+		$pm2->stop("core-fastagi");
+
+		$data = $pm2->getStatus("core-fastagi");
+		if (empty($data) || $data['pm2_env']['status'] != 'online') {
+			$pm2->delete("core-fastagi");
+			if($debug) {
+				$this->writeln(_("Stopped FastAGI Server"));
+			}
+		} else {
+			if($debug) {
+				$this->writeln("<error>".sprintf(_("FastAGI Server Failed: %s")."</error>",$process->getErrorOutput()));
+			}
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * This is called in extensions.class.php to tell if FastAGI Dialplan should be written out
+	 *
+	 * @return boolean
+	 */
+	public function fastAGIStatus() {
+		return $this->fastAGIState;
+	}
+
+	public function preReloadFreepbx() {
+		//dont do anything if FASTAGI is disabled
+		if(!$this->freepbx->Config->get('LAUNCH_AGI_AS_FASTAGI')) {
+			//should we do a notification here? probably not.
+			$this->freepbx->Notifications->delete('core','FASTAGI');
+			return;
+		}
+
+		//make sure pm2 is installed
+		if(!$this->freepbx->Modules->checkStatus("pm2")) {
+			$this->freepbx->Notifications->add_warning('core','FASTAGI',_("PM2 Not installed"),_("'Launch local AGIs through FastAGI Server' was enabled in Advanced Settings but PM2 is not installed so we were unable to start the FastAGI server, As a result all AGIs will be forked inside of Asterisk until this is resolved"),"",true,true);
+		}
+
+		//lets see if core-fastagi is running
+		$pm2 = $this->freepbx->Pm2;
+		$status = $pm2->getStatus("core-fastagi");
+		//its not started so lets attempt to start it
+		if($status['pm2_env']['status'] !== 'online') {
+			//its not so lets try to start it!
+			try {
+				//attempting
+				$this->startFreepbx(new \Symfony\Component\Console\Output\NullOutput());
+			} catch(\Exception $e) {
+				//it failed. log out the reason why and return
+				$this->freepbx->Notifications->add_warning('core','FASTAGI',_("Fast AGI Server not running"),sprintf(_("Launch local AGIs through FastAGI Server' was enabled in Advanced Settings but we were unable to start FastAGI server because: %s, As a result all AGIs will be forked inside of Asterisk until this is resolved"),$e->getMessage()),"",true,true);
+				return;
+			}
+
+			//did it actually start?
+			$status = $pm2->getStatus("core-fastagi");
+			if($status['pm2_env']['status'] !== 'online') {
+				$this->freepbx->Notifications->add_warning('core','FASTAGI',_("Fast AGI Server not running"),_("'Launch local AGIs through FastAGI Server' was enabled in Advanced Settings but the FastAGI server was unable to start, As a result all AGIs will be forked inside of Asterisk until this is resolved"),"",true,true);
+				return;
+			}
+		}
+
+		//delete any warnings because we are successfull
+		$this->freepbx->Notifications->delete('core','FASTAGI');
+		//set state to true
+		$this->fastAGIState = true;
+	}
+
+	public function postReloadFreepbx() {
+
+	}
+
+	/**
+	 * FreePBX chown hooks
+	 */
+	public function chownFreepbx() {
+
+	}
+
+	private function setWriter($writer) {
+		$this->writer = $writer;
+	}
+
+	public function writeln($message) {
+		if(is_object($this->writer)) {
+			return $this->writer->writeln($message);
+		} else {
+			out(preg_replace("/<\/?\w*>/", "", $message));
+		}
+	}
+
+	public function write($message) {
+		if(is_object($this->writer)) {
+			return $this->writer->write($message);
+		} else {
+			outn(preg_replace("/<\/?\w*>/", "", $message));
+		}
 	}
 }

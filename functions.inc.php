@@ -35,39 +35,6 @@ class core_conf {
 		return self::$obj;
 	}
 
-	// map the actual vmcontext and user devicename if the device is fixed
-	private function map_dev_user($account, $keyword, $data) {
-		global $amp_conf;
-
-		if (!isset($this->dev_user_map)) {
-			$this->dev_user_map = core_devices_get_user_mappings();
-		}
-
-		if (!empty($this->dev_user_map[$account]) && $this->dev_user_map[$account]['devicetype'] == 'fixed') {
-			switch (strtolower($keyword)) {
-				case 'callerid':
-				$user_option = $this->dev_user_map[$account]['description'] . ' <' . $account . '>';
-				break;
-				case 'mailbox':
-				if ((empty($this->dev_user_map[$account]['vmcontext']) || $this->dev_user_map[$account]['vmcontext'] == 'novm')
-				&& strtolower($data) == "$account" . "@device" && $amp_conf['DEVICE_REMOVE_MAILBOX']) {
-					// they have no vm so don't put a mailbox=line
-					return "";
-				} elseif (strtolower($data) == "$account" . "@device"
-				&& !empty($this->dev_user_map[$account]['vmcontext']) &&
-				$this->dev_user_map[$account]['vmcontext'] != 'novm') {
-					$user_option = $this->dev_user_map[$account]['user'] . "@" . $this->dev_user_map[$account]['vmcontext'];
-				} else {
-					$user_option = $data;
-				}
-			}
-			$output = $keyword . "=" . $user_option . "\n";
-		} else {
-			$output = $keyword . "=" . $data . "\n";
-		}
-		return $output;
-	}
-
 	// return an array of filenames to write
 	function get_filename() {
 		global $chan_dahdi;
@@ -507,7 +474,7 @@ class core_conf {
 					break;
 					case 'callerid':
 					case 'mailbox':
-					$output .= $this->map_dev_user($account, $result2['keyword'], $result2['data']);
+					$output .= FreePBX\modules\Core\Driver::map_dev_user($account, $result2['keyword'], $result2['data']);
 					break;
 					case 'secret_origional':
 					//stupidness coming through
@@ -732,7 +699,7 @@ class core_conf {
 					break;
 					case 'callerid':
 					case 'mailbox':
-						$output .= $this->map_dev_user($account, $result2['keyword'], $result2['data']);
+						$output .= FreePBX\modules\Core\Driver::map_dev_user($account, $result2['keyword'], $result2['data']);
 					break;
 					case 'context':
 						$context = $option;
@@ -842,7 +809,7 @@ class core_conf {
 					break;
 					case 'callerid':
 					case 'mailbox':
-					$output .= $this->map_dev_user($account, $result2['keyword'], $result2['data']);
+					$output .= FreePBX\modules\Core\Driver::map_dev_user($account, $result2['keyword'], $result2['data']);
 					break;
 					default:
 					$output .= $result2['keyword']."=".$result2['data']."\n";
@@ -971,6 +938,12 @@ function core_getdestinfo($dest) {
 	// Check for Extension Number Destinations
 	//
 	$users = \FreePBX::Core()->getAllUsers();
+  	if (substr(trim($dest),0,11) == 'from-trunk,') {
+		$did = explode(',',$dest);
+		$did = $did[1];
+		return array('description' => sprintf(_('Inbound Routes : %s'),$did),
+		'edit_url' => "config.php?display=did&view=form&extdisplay=$did%2F");
+	}
 	if (substr(trim($dest),0,16) == 'from-did-direct,') {
 		$exten = explode(',',$dest);
 		$exten = $exten[1];
@@ -1144,7 +1117,6 @@ function core_do_get_config($engine) {
 		$fc_userlogoff = $fcc->getCodeActive();
 		unset($fcc);
 
-		global $version;
 		if(version_compare($version, "12.5", "<")) {
 			$fcc = new featurecode($modulename, 'zapbarge');
 			$fc_zapbarge = $fcc->getCodeActive();
@@ -1425,7 +1397,6 @@ function core_do_get_config($engine) {
 
 
 		// zap barge
-		global $version;
 		if (version_compare($version, "12.5", "<") && $fc_zapbarge != '') {
 			$ext->addInclude('from-internal-additional', 'app-zapbarge'); // Add the include from from-internal
 
@@ -1561,7 +1532,6 @@ function core_do_get_config($engine) {
 					if ($catchaccount =="_." && ! $catchall) {
 						$catchall = true;
 						$ext->add($catchall_context, $catchaccount, '', new ext_NoOp('Catch-All DID Match - Found ${EXTEN} - You probably want a DID for this.'));
-						$ext->add($catchall_context, $catchaccount, '', new ext_log('WARNING', 'Friendly Scanner from ${CUT(CUT(SIP_HEADER(Via), ,2),:,1)}'));
 						$ext->add($catchall_context, $catchaccount, '', new ext_set('__FROM_DID', '${EXTEN}'));
 						$ext->add($catchall_context, $catchaccount, '', new ext_goto('1','s','ext-did'));
 					}
@@ -2232,7 +2202,8 @@ function core_do_get_config($engine) {
 	}
 
 	general_generate_indications();
-
+	//adding outisbusy macro context
+	$ext->add('macro-outisbusy', 's', '', new ext_playback('all-circuits-busy-now&please-try-call-later'));
 	// "blackhole" destinations
 	$ext->add('app-blackhole', 'hangup', '', new ext_noop('Blackhole Dest: Hangup'));
 	$ext->add('app-blackhole', 'hangup', '', new ext_hangup());
@@ -2353,7 +2324,10 @@ function core_do_get_config($engine) {
 
 	$exten = '1';
 	if ($amp_conf['AST_FUNC_SHARED']) {
-		$ext->add($context, $exten, '', new ext_gotoif('$["${DB_EXISTS(RG/${ARG3}/${UNIQCHAN})}"="0" & "${SHARED(ANSWER_STATUS,${FORCE_CONFIRM})}"=""]', 'toolate,1'));
+		$ext->add($context, $exten, '', new ext_gotoif('$["${DB_EXISTS(RG/${ARG3}/${UNIQCHAN})}"="0"  & "${SHARED(ANSWER_STATUS,${FORCE_CONFIRM})}"=""]', 'toolate,1'));
+		$ext->add($context, $exten, '', new ext_gotoif('$["${BLKVM_CHANNEL}" !="" & "${DB_EXISTS(RG/${ARG3}/${UNIQCHAN})}"="0" & "${SHARED(ANSWER_STATUS,${BLKVM_CHANNEL})}"=""]', 'toolate,1'));
+		$ext->add($context, $exten, '', new ext_setvar("cfchannel", '${IF($[${REGEX("/from-queue/" ${UNIQCHAN})}]?${UNIQCHAN}:${BLKVM_CHANNEL})}'));
+		$ext->add($context, $exten, '', new ext_gotoif('$["${SHARED(BLKVM,${cfchannel})}"=""]', 'toolate,1'));
 	} else {
 		$ext->add($context, $exten, '', new ext_gotoif('$["${FORCE_CONFIRM}" != ""]', 'skip'));
 		$ext->add($context, $exten, '', new ext_gotoif('$["${DB_EXISTS(RG/${ARG3}/${UNIQCHAN})}"="0"]', 'toolate,1'));
@@ -2560,7 +2534,7 @@ function core_do_get_config($engine) {
 		}
 
 		$ext->add($context, $exten, '', new ext_gotoif('$["${custom}" = "AMP"]', 'customtrunk'));
-		$ext->add($context, $exten, '', new ext_dial('${OUT_${DIAL_TRUNK}}/${OUTNUM}${OUT_${DIAL_TRUNK}_SUFFIX}', '${TRUNK_RING_TIMER},${DIAL_TRUNK_OPTIONS}b(func-apply-sipheaders^s^1)'));  // Regular Trunk Dial
+		$ext->add($context, $exten, '', new ext_dial('${OUT_${DIAL_TRUNK}}/${OUTNUM}${OUT_${DIAL_TRUNK}_SUFFIX}', '${TRUNK_RING_TIMER},${DIAL_TRUNK_OPTIONS}b(func-apply-sipheaders^s^1,(${DIAL_TRUNK}))'));  // Regular Trunk Dial
 		$ext->add($context, $exten, '', new ext_noop('Dial failed for some reason with DIALSTATUS = ${DIALSTATUS} and HANGUPCAUSE = ${HANGUPCAUSE}'));
 		$ext->add($context, $exten, '', new ext_gotoif('$["${ARG4}" = "on"]','continue,1', 's-${DIALSTATUS},1'));
 
@@ -3007,7 +2981,7 @@ function core_do_get_config($engine) {
 	// Save then CIDNAME while it is still intact in case we end up sending out this same CID
 
 	$ext->add($context, $exten, 'start', new ext_gotoif('$[ $["${REALCALLERIDNUM}" = ""] | $["${KEEPCID}" != "TRUE"] | $["${OUTKEEPCID_${ARG1}}" = "on"] ]', 'normcid'));  // Set to TRUE if coming from ringgroups, CF, etc.
-	$ext->add($context, $exten, '', new ext_set('USEROUTCID', '${REALCALLERIDNUM}'));
+	$ext->add($context, $exten, '', new ext_set('USEROUTCID', '${CALLERID(name)} <${REALCALLERIDNUM}>'));
 	//$ext->add($context, $exten, '', new ext_set('REALCALLERIDNAME', '${CALLERID(name)}'));
 
 	//FREEPBX-13173 if we are masquerading we need to reset the CID otherwise we will masquerade out as the masquerade
@@ -3026,8 +3000,10 @@ function core_do_get_config($engine) {
 	$ext->add($context, $exten, '', new ext_set('TRUNKOUTCID', '${OUTCID_${ARG1}}'));
 	$ext->add($context, $exten, '', new ext_gotoif('$["${EMERGENCYROUTE:1:2}" = "" | "${EMERGENCYCID:1:2}" = ""]', 'trunkcid'));  // check EMERGENCY ROUTE
 	$ext->add($context, $exten, '', new ext_set('CALLERID(all)', '${EMERGENCYCID}'));  // emergency cid for device
-	$ext->add($context, $exten, '', new ext_set('CDR(outbound_cnum)','${CALLERID(num)}'));
+	//FREEPBX-18066 if CNAM is empty skip setting it...
+	$ext->add($context, $exten, '', new ext_gotoif('$["${CALLERID(name)}" = ""]', 'cnum'));
 	$ext->add($context, $exten, '', new ext_set('CDR(outbound_cnam)','${CALLERID(name)}'));
+	$ext->add($context, $exten, 'cnum', new ext_set('CDR(outbound_cnum)','${CALLERID(num)}'));
 	$ext->add($context, $exten, 'exit', new ext_macroexit());
 
 
@@ -3951,24 +3927,70 @@ function core_do_get_config($engine) {
 	// Work around Asterisk issue: https://issues.asterisk.org/jira/browse/ASTERISK-19853
 	$ext->add($mcontext, $exten,'theend', new ext_execif('$["${ONETOUCH_RECFILE}"!="" & "${CDR(recordingfile)}"=""]','Set','CDR(recordingfile)=${ONETOUCH_RECFILE}'));
 	//FREEPBX-13830 and FREEPBX-13025 Call recording stopped after a atxfer (attendend transfer)
-	$ext->add($mcontext, $exten,'', new ext_noop('${CDR(dstchannel)} monior file= ${MIXMONITOR_FILENAME}'));
+	$ext->add($mcontext, $exten,'', new ext_noop('${CDR(dstchannel)} montior file= ${MIXMONITOR_FILENAME}'));
+	$ext->add($mcontext, $exten,'', new ext_gotoif('$["${CDR(dstchannel)}" = "" | "${MIXMONITOR_FILENAME}" = ""]', 'skipagi'));
 	$ext->add($mcontext, $exten,'', new ext_AGI('attendedtransfer-rec-restart.php,${CDR(dstchannel)},${MIXMONITOR_FILENAME}'));
-	$ext->add($mcontext, $exten,'', new ext_hangup()); // TODO: once Asterisk issue fixed label as theend
+	$ext->add($mcontext, $exten,'skipagi', new ext_hangup());
 	$ext->add($mcontext, $exten,'', new ext_macroexit(''));
-	/*
-	$ext->add($mcontext, $exten, 'theend', new ext_gosubif('$["${ONETOUCH_REC}"="RECORDING"]', 'macro-one-touch-record,s,sstate', false, '${FROMEXTEN},NOT_INUSE'));
-	$ext->add($mcontext, $exten, '', new ext_gosubif('$["${ONETOUCH_REC}"="RECORDING"&"${MASTER_CHANNEL(CLEAN_DIALEDPEERNUMBER)}"="${CUT(CALLFILENAME,-,2)}"]', 'macro-one-touch-record,s,sstate', false, '${IF($["${EXTTOCALL}"!=""]?${EXTTOCALL}:${CUT(CALLFILENAME,-,2)})},NOT_INUSE'));
-	$ext->add($mcontext, $exten, '', new ext_gosubif('$["${ONETOUCH_REC}"="RECORDING"&"${MASTER_CHANNEL(CLEAN_DIALEDPEERNUMBER)}"!="${CUT(CALLFILENAME,-,2)}"]','macro-one-touch-record,s,sstate',false,'${MASTER_CHANNEL(CLEAN_DIALEDPEERNUMBER)},NOT_INUSE'));
-	$ext->add($mcontext,$exten,'', new ext_noop_trace('ONETOUCH_REC: ${ONETOUCH_REC}',5));
-	*/
 
-	/* Now generate a clean DIALEDPEERNUMBER if ugly followme/ringgroup extensions dialplans were engaged
-	* doesn't seem like this is need with some of the NoCDRs() but leave for now and keep an eye on it
-	*
-	$ext->add($mcontext, $exten, '', new ext_execif('$["${CLEAN_DIALEDPEERNUMBER}"=""]','Set','CLEAN_DIALEDPEERNUMBER=${IF($[${FIELDQTY(DIALEDPEERNUMBER,-)}=1]?${DIALEDPEERNUMBER}:${CUT(CUT(DIALEDPEERNUMBER,-,2),@,1)})}'));
-	$ext->add($mcontext, $exten, '', new ext_set('CDR(clean_dst)','${CLEAN_DIALEDPEERNUMBER}'));
-	*/
+	// Used to log a user onto an adhoc device. Most of the work is done by
+	// user_login_out.agi AGI script
+	$mcontext = 'macro-user-logon';
+	$ext->add($mcontext, 's','', new ext_set('DEVICETYPE','${DB(DEVICE/${CALLERID(number)}/type)}'));
+	$ext->add($mcontext, 's','', new ext_answer());
+	$ext->add($mcontext, 's','', new ext_wait(1));
+	$ext->add($mcontext, 's','', new ext_gotoif('$["${DEVICETYPE}" = "fixed"]','s-FIXED,1'));
 
+	// get user's extension
+	$ext->add($mcontext, 's','', new ext_set('AMPUSER','${ARG1}'));
+	$ext->add($mcontext, 's','', new ext_gotoif('$["${AMPUSER}" != ""]','gotpass'));
+	$ext->add($mcontext, 's','', new ext_read('AMPUSER', 'please-enter-your-extension-then-press-pound', '', '', 4));
+
+	// get user's password and authenticate
+	$ext->add($mcontext, 's','', new ext_gotoif('$["${AMPUSER}" = ""]','s-MAXATTEMPTS,1'));
+	$ext->add($mcontext, 's','gotpass', new ext_gotoif('$["${DB_EXISTS(AMPUSER/${AMPUSER}/password)}" = "0"]','s-NOUSER,1'));
+	$ext->add($mcontext, 's','', new ext_set('AMPUSERPASS','${DB_RESULT}'));
+	$ext->add($mcontext, 's','', new ext_gotoif('$[${LEN(${AMPUSERPASS})} = 0]','s-NOPASSWORD,1'));
+
+	// do not continue if the user has already logged onto this device
+	$ext->add($mcontext, 's','', new ext_set('DEVICEUSER','${DB(DEVICE/${CALLERID(number)}/user)}'));
+	$ext->add($mcontext, 's','', new ext_gotoif('$["${DEVICEUSER}" = "${AMPUSER}"]','s-ALREADYLOGGEDON,1'));
+	$ext->add($mcontext, 's','', new ext_authenticate('${AMPUSERPASS}'));
+	$ext->add($mcontext, 's','', new ext_agi('user_login_out.agi,login,${CALLERID(number)},${AMPUSER}'));
+	$ext->add($mcontext, 's','', new ext_playback('agent-loginok'));
+
+	$ext->add($mcontext, 's-FIXED','', new ext_noop('Device is FIXED and cannot be logged into'));
+	$ext->add($mcontext, 's-FIXED','', new ext_saynumber('${CALLERID(number)}'));
+	$ext->add($mcontext, 's-FIXED','', new ext_playback('vm-isunavail&vm-goodbye'));
+	$ext->add($mcontext, 's-FIXED','', new ext_hangup());
+
+	$ext->add($mcontext, 's-ALREADYLOGGEDON','', new ext_noop('This device has already been logged into by this user'));
+	$ext->add($mcontext, 's-ALREADYLOGGEDON','', new ext_playback('vm-goodbye'));
+	$ext->add($mcontext, 's-ALREADYLOGGEDON','', new ext_hangup()); //TODO should play msg indicated device is already logged into
+
+	$ext->add($mcontext, 's-NOPASSWORD','', new ext_noop('This extension does not exist or no password is set'));
+	$ext->add($mcontext, 's-NOPASSWORD','', new ext_playback('pbx-invalid'));
+	$ext->add($mcontext, 's-NOPASSWORD','', new ext_hangup());
+
+	$ext->add($mcontext, 's-MAXATTEMPTS','', new ext_noop('Too many login attempts'));
+	$ext->add($mcontext, 's-MAXATTEMPTS','', new ext_playback('vm-goodbye'));
+	$ext->add($mcontext, 's-MAXATTEMPTS','', new ext_hangup());
+
+	$ext->add($mcontext, 's-NOUSER','', new ext_noop('Invalid extension ${AMPUSER} entered'));
+	$ext->add($mcontext, 's-NOUSER','', new ext_playback('pbx-invalid'));
+	$ext->add($mcontext, 's-NOUSER','', new ext_goto('s,playagain'));
+
+	// Used to log a user off of an adhoc device. Most of the work is done by
+	// user_login_out.agi AGI script
+	$mcontext = 'macro-user-logoff';
+	$ext->add($mcontext, 's','', new ext_set('DEVICETYPE','${DB(DEVICE/${CALLERID(number)}/type)}'));
+	$ext->add($mcontext, 's','', new ext_gotoif('$["${DEVICETYPE}" = "fixed"]','s-FIXED,1'));
+	$ext->add($mcontext, 's','', new ext_agi('user_login_out.agi,logout,${CALLERID(number)}'));
+	$ext->add($mcontext, 's','done', new ext_playback('agent-loggedoff'));
+
+	$ext->add($mcontext, 's-FIXED','', new ext_noop('Device is FIXED and cannot be logged into'));
+	$ext->add($mcontext, 's-FIXED','', new ext_playback('an-error-has-occured&vm-goodbye'));
+	$ext->add($mcontext, 's-FIXED','', new ext_hangup()); //TODO should play msg indicated device cannot be logged into
 
 	/* macro-hangupcall */
 
@@ -4133,32 +4155,12 @@ function core_devices_list($tech="all",$detail=false,$get_all=false) {
 // override some of the mailbox options or remove them if novm
 //
 function core_devices_get_user_mappings() {
-	static $devices;
-
-	if (isset($devices)) {
-		return $devices;
-	}
-	$device_list = core_devices_list("all",'full', true);
-	$device_list = is_array($device_list)?$device_list:array();
-	foreach ($device_list as $device) {
-		$devices[$device['id']] = $device;
-	}
-	$user_list = core_users_list(true);
-	$user_list = is_array($user_list)?$user_list:array();
-	foreach ($user_list as $user) {
-		$users[$user[0]]['description'] = $user[1];
-		$users[$user[0]]['vmcontext'] = $user[2];
-	}
-	foreach ($devices as $id => $device) {
-		if ($device['devicetype'] == 'fixed') {
-			$devices[$id]['vmcontext'] = $users[$device['user']]['vmcontext'];
-			$devices[$id]['description'] = $users[$device['user']]['description'];
-		}
-	}
-	return $devices;
+	_core_backtrace();
+	FreePBX::create()->Core;
+	return FreePBX\modules\Core\Driver::devicesGetUserMappings();
 }
 
-function core_devices_add($id,$tech,$dial,$devicetype,$user,$description,$emergency_cid=null,$editmode=false){
+function core_devices_add($id,$tech,$dial,$devicetype,$user,$description,$emergency_cid=null,$hint_override=null,$editmode=false){
 	_core_backtrace();
 	$flag = 2;
 	$fields = FreePBX::Core()->convertRequest2Array($id,$tech,$flag);
@@ -4167,7 +4169,8 @@ function core_devices_add($id,$tech,$dial,$devicetype,$user,$description,$emerge
 		"devicetype" => array("value" => $devicetype),
 		"user" => array("value" => $user),
 		"description" => array("value" => $description),
-		"emergency_cid" => array("value" => $emergency_cid)
+		"emergency_cid" => array("value" => $emergency_cid),
+		"hint_override" => array("value" => $hint_override),
 	);
 	$settings = array_merge($settings,$fields);
 	// Asterisk treats no CallerID from an IAX device as 'hide CallerID', and ignores the CallerID
@@ -4391,19 +4394,20 @@ function core_hint_get($account){
 	if ($astman) {
 		$device=$astman->database_get("AMPUSER",$account."/device");
 		$device_arr = explode('&',$device);
-		$sql = "SELECT dial from devices where id in ('".implode("','",$device_arr)."')";
+		$sql = "SELECT dial, hint_override from devices where id in ('".implode("','",$device_arr)."')";
 	} else {
-		$sql = "SELECT dial from devices where user = '{$account}'";
+		$sql = "SELECT dial, hint_override from devices where user = '{$account}'";
 	}
 	$results = sql($sql,"getAll",DB_FETCHMODE_ASSOC);
 
 	//create an array of strings
 	if (is_array($results)){
 		foreach ($results as $result) {
+			$hint = !empty($result['hint_override']) ? $result['hint_override'] : $result['dial'];
 			if ($chan_dahdi) {
-				$dial[] = str_replace('ZAP', 'DAHDI', $result['dial']);
+				$dial[] = str_replace('ZAP', 'DAHDI', $hint);
 			} else {
-				$dial[] = $result['dial'];
+				$dial[] = $hint;
 			}
 		}
 	}
@@ -4665,16 +4669,6 @@ function core_directdid_list(){
 function core_dahdichandids_add($description, $channel, $did) {
 	global $db;
 
-
-	if (!ctype_digit(trim($channel)) || trim($channel) == '') {
-		echo "<script>javascript:alert('"._("Invalid Channel Number, must be numeric and not blank")."')</script>";
-		return false;
-	}
-	if (trim($did) == '') {
-		echo "<script>javascript:alert('"._("Invalid DID, must be a non-blank DID")."')</script>";
-		return false;
-	}
-
 	$description = q($description);
 	$channel     = q($channel);
 	$did         = q($did);
@@ -4682,12 +4676,7 @@ function core_dahdichandids_add($description, $channel, $did) {
 	$sql = "INSERT INTO dahdichandids (channel, description, did) VALUES ($channel, $description, $did)";
 	$results = $db->query($sql);
 	if (DB::IsError($results)) {
-		if ($results->getCode() == DB_ERROR_ALREADY_EXISTS) {
-			echo "<script>javascript:alert('"._("Error Duplicate Channel Entry")."')</script>";
-			return false;
-		} else {
-			die_freepbx($results->getMessage()."<br><br>".$sql);
-		}
+		die_freepbx($results->getMessage()."<br><br>".$sql);
 	}
 	return true;
 }
@@ -5979,7 +5968,7 @@ function core_devices_configpageload() {
 		}
 
 		// Ensure they exist before the extract
-		$devinfo_description = $devinfo_emergency_cid = null;
+		$devinfo_hint_override = $devinfo_description = $devinfo_emergency_cid = null;
 		$devinfo_devicetype = $devinfo_user = $devinfo_hardware = null;
 		$devinfo_tech = null;
 		if ( is_array($deviceInfo) ) {
@@ -6010,6 +5999,7 @@ function core_devices_configpageload() {
 			$currentcomponent->addguielem($section, new gui_selectbox('devicetype', $currentcomponent->getoptlist('devicetypelist'), $devinfo_devicetype, _("Device Type"), _("Devices can be fixed or adhoc. Fixed devices are always associated to the same extension/user. Adhoc devices can be logged into and logged out of by users.").' '.$fc_logon.' '._("logs into a device.").' '.$fc_logoff.' '._("logs out of a device."), false),"general");
 			$currentcomponent->addguielem($section, new gui_selectbox('deviceuser', $currentcomponent->getoptlist('deviceuserlist'), $devinfo_user, _("Default User"), _("Fixed devices will always mapped to this user.  Adhoc devices will be mapped to this user by default.<br><br>If selecting 'New User', a new User Extension of the same Device ID will be set as the Default User."), false),"general");
 			$currentcomponent->addguielem($section, new gui_textbox('emergency_cid', $devinfo_emergency_cid, _("Emergency CID"), _("This CallerID will always be set when dialing out an Outbound Route flagged as Emergency.  The Emergency CID overrides all other CallerID settings."), '!isCallerID()', $msgInvalidEmergCID),"advanced");
+			$currentcomponent->addguielem($section, new gui_textbox('hint_override', $devinfo_hint_override, _("Hint Override"), _("Only set this if you wish to override the hint referenced in ext-local. This is useful in situations where the hint doesnt match the dial string. This should not be changed unless you know what you are doing.")),"advanced");
 		} else {
 			$section = _("Extension Options");
 			$currentcomponent->addguielem($section, new gui_textbox('emergency_cid', $devinfo_emergency_cid, _("Emergency CID"), _("This CallerID will always be set when dialing out an Outbound Route flagged as Emergency.  The Emergency CID overrides all other CallerID settings."), '!isCallerID()', $msgInvalidEmergCID),"advanced");
@@ -6123,7 +6113,7 @@ function core_devices_configprocess() {
 		// really bad hack - but if core_users_add fails, want to stop core_devices_add
 
 		if (!isset($GLOBALS['abort']) || $GLOBALS['abort'] !== true || !$_SESSION["AMP_user"]->checkSection('999')) {
-			if (core_devices_add($deviceid,$tech,$devinfo_dial,$devicetype,$deviceuser,$description,$emergency_cid)) {
+			if (core_devices_add($deviceid,$tech,$devinfo_dial,$devicetype,$deviceuser,$description,$emergency_cid,$hint_override)) {
 				needreload();
 				if ($deviceuser == 'new') {
 					//redirect_standard_continue();
@@ -6165,7 +6155,7 @@ function core_devices_configprocess() {
 				$settings = array_merge($fields,$settings);
 				return FreePBX::Core()->addDevice($deviceid,$tech,$settings,true);
 			} else {
-				core_devices_add($deviceid,$tech,$devinfo_dial,$devicetype,$deviceuser,$description,$emergency_cid,true);
+				core_devices_add($deviceid,$tech,$devinfo_dial,$devicetype,$deviceuser,$description,$emergency_cid,$hint_override,true);
 			}
 
 			needreload();

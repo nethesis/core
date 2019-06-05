@@ -31,7 +31,7 @@ $fcc->setDefault('*12');
 $fcc->update();
 unset($fcc);
 
-global $version;
+$version = $amp_conf["ASTVERSION"];
 if(version_compare($version, "12.5", "<")) {
 	$fcc = new featurecode('core', 'zapbarge');
 	$fcc->setDescription('ZapBarge');
@@ -116,6 +116,22 @@ $globals_convert['DIAL_OPTIONS'] = 'HhTtr';
 $globals_convert['TRUNK_OPTIONS'] = 'T';
 $globals_convert['RINGTIMER'] = '15';
 $globals_convert['TONEZONE'] = 'us';
+
+// LAUNCH_AGI_AS_FASTAGI
+//
+$set['value'] = false;
+$set['defaultval'] =& $set['value'];
+$set['options'] = '';
+$set['readonly'] = 0;
+$set['hidden'] = 0;
+$set['level'] = 0;
+$set['module'] = '';
+$set['category'] = 'Dialplan and Operational';
+$set['emptyok'] = 0;
+$set['name'] = 'Launch local AGIs through FastAGI Server';
+$set['description'] = "When enabled all AGI() calls that launch local scripts will instead launch through a FastAGI subprocess. In certain environments this can cause performance improvements. Any AGIs that already called upon agi:// will be unaffected";
+$set['type'] = CONF_TYPE_BOOL;
+$freepbx_conf->define_conf_setting('LAUNCH_AGI_AS_FASTAGI',$set);
 
 // OUTBOUND_CID_UPDATE
 //
@@ -1016,3 +1032,20 @@ if(!\FreePBX::Core()->getConfig('migratesendrpid')) {
 	\FreePBX::Database()->query($sql);
 	\FreePBX::Core()->setConfig('migratesendrpid',true);
 }
+
+
+outn(_("Removing encoding on incoming routes alertinfo values..."));
+$sth = \FreePBX::Database()->prepare("SELECT * FROM incoming WHERE `alertinfo` != ''");
+$sth->execute();
+$res = $sth->fetchAll(\PDO::FETCH_ASSOC);
+foreach($res as $row) {
+	$sth1 = \FreePBX::Database()->prepare("UPDATE incoming SET `alertinfo` = :alertinfo WHERE cidnum = :cidnum AND extension = :extension");
+	try {
+		$sth1->execute(array(
+			":alertinfo" => htmlspecialchars_decode($row['alertinfo']),
+			":cidnum" => $row['cidnum'],
+			":extension" => $row['extension'],
+		));
+	} catch(\Exception $e) {}
+}
+out(_("done"));
