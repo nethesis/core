@@ -2327,7 +2327,7 @@ function core_do_get_config($engine) {
 		$ext->add($context, $exten, '', new ext_gotoif('$["${DB_EXISTS(RG/${ARG3}/${UNIQCHAN})}"="0"  & "${SHARED(ANSWER_STATUS,${FORCE_CONFIRM})}"=""]', 'toolate,1'));
 		$ext->add($context, $exten, '', new ext_gotoif('$["${BLKVM_CHANNEL}" !="" & "${DB_EXISTS(RG/${ARG3}/${UNIQCHAN})}"="0" & "${SHARED(ANSWER_STATUS,${BLKVM_CHANNEL})}"=""]', 'toolate,1'));
 		$ext->add($context, $exten, '', new ext_setvar("cfchannel", '${IF($[${REGEX("/from-queue/" ${UNIQCHAN})}]?${UNIQCHAN}:${BLKVM_CHANNEL})}'));
-		$ext->add($context, $exten, '', new ext_gotoif('$["${SHARED(BLKVM,${cfchannel})}"=""]', 'toolate,1'));
+		$ext->add($context, $exten, '', new ext_gotoif('$["${SHARED(BLKVM,${cfchannel})}"="" & ${QCALLBACK}=""]', 'toolate,1'));
 	} else {
 		$ext->add($context, $exten, '', new ext_gotoif('$["${FORCE_CONFIRM}" != ""]', 'skip'));
 		$ext->add($context, $exten, '', new ext_gotoif('$["${DB_EXISTS(RG/${ARG3}/${UNIQCHAN})}"="0"]', 'toolate,1'));
@@ -2534,6 +2534,7 @@ function core_do_get_config($engine) {
 		}
 
 		$ext->add($context, $exten, '', new ext_gotoif('$["${custom}" = "AMP"]', 'customtrunk'));
+		$ext->add($context, $exten, '', new ext_execif('$["${DIRECTION}" = "INBOUND"]', 'Set', 'DIAL_TRUNK_OPTIONS=${STRREPLACE(DIAL_TRUNK_OPTIONS,T)}'));
 		$ext->add($context, $exten, '', new ext_dial('${OUT_${DIAL_TRUNK}}/${OUTNUM}${OUT_${DIAL_TRUNK}_SUFFIX}', '${TRUNK_RING_TIMER},${DIAL_TRUNK_OPTIONS}b(func-apply-sipheaders^s^1,(${DIAL_TRUNK}))'));  // Regular Trunk Dial
 		$ext->add($context, $exten, '', new ext_noop('Dial failed for some reason with DIALSTATUS = ${DIALSTATUS} and HANGUPCAUSE = ${HANGUPCAUSE}'));
 		$ext->add($context, $exten, '', new ext_gotoif('$["${ARG4}" = "on"]','continue,1', 's-${DIALSTATUS},1'));
@@ -3013,6 +3014,8 @@ function core_do_get_config($engine) {
 	* an Emergency CID on an Emergency Route
 	*/
 	$ext->add($context, $exten, '', new ext_execif('$[${LEN(${TRUNKCIDOVERRIDE})} != 0 | ${LEN(${FORCEDOUTCID_${ARG1}})} != 0]', 'Set', 'CALLERID(all)=${IF($[${LEN(${FORCEDOUTCID_${ARG1}})}=0]?${TRUNKCIDOVERRIDE}:${FORCEDOUTCID_${ARG1}})}'));
+	//check queue callback callerid ,if  No force trunkcid is set the send queue callback cid
+	$ext->add($context, $exten, '', new ext_execif('$[${QCALLBACK} = 1 & ${LEN(${FORCEDOUTCID_${ARG1}})} = 0]', 'Set', 'CALLERID(all)=${REALCALLERIDNUM}'));
 	$ext->add($context, $exten, 'hidecid', new ext_execif('$["${CALLERID(name)}"="hidden"]', 'Set', 'CALLERPRES(name-pres)=prohib_passed_screen'));
 	//We are checking to see if the CallerID name is <hidden> (from freepbx) so we hide both the name and the number. I believe this is correct.
 	$ext->add($context, $exten, '', new ext_execif('$["${CALLERID(name)}"="hidden"]', 'Set', 'CALLERPRES(num-pres)=prohib_passed_screen'));
