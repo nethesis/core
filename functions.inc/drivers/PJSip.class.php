@@ -699,7 +699,10 @@ class PJSip extends \FreePBX\modules\Core\Drivers\Sip {
 	*/
 	public function writeConfig($conf) {
 		$this->freepbx->Config->set_conf_values(array('ASTSIPDRIVER' => 'both'), true, true);
-		$this->enablePJSipModules();
+		$this->freepbx->ModulesConf->removenoload("chan_sip.so");
+		foreach ($this->PJSipModules as $mod) {
+			$this->freepbx->ModulesConf->removenoload($mod);
+		}
 		$this->freepbx->WriteConfig($conf);
 	}
 
